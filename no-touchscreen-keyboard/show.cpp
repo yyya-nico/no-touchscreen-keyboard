@@ -15,8 +15,6 @@
 #include <initguid.h>
 #include <Objbase.h>
 
-#include "Hook.h"
-
 #pragma hdrstop
 
 // 4ce576fa-83dc-4F88-951c-9d0782b4e376
@@ -474,7 +472,33 @@ void HookCallback(BOOL isFocus) {
 	}
 }
 
+typedef void (*SetCallbackFunc)(void (*)(BOOL isFocus));
+typedef void (*UnhookFunc)();
+
+HINSTANCE hDll = NULL;
+SetCallbackFunc SetCallback = NULL;
+
+HHOOK hHook = NULL;
 HRESULT hr;
+
+void LoadHookDll() {
+    hDll = LoadLibrary(L"Hook.dll");
+    if (hDll) {
+        SetCallback = (SetCallbackFunc)GetProcAddress(hDll, "SetCallback");
+        if (SetCallback) {
+            hr = CoInitialize(0);
+            hr = CoCreateInstance(CLSID_UIHostNoLaunch, 0, CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER, IID_ITipInvocation, (void**)&tip);
+            hwnd = GetDesktopWindow();
+            SetCallback(HookCallback);
+        }
+        else {
+            Print(L"Failed to get function addresses\n");
+        }
+    }
+    else {
+        Print(L"Failed to load DLL\n");
+    }
+}
 
 LRESULT CALLBACK WindowProc(HWND trayHwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
@@ -505,10 +529,7 @@ LRESULT CALLBACK WindowProc(HWND trayHwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 
 int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
-  hr = CoInitialize(0);
-  hr = CoCreateInstance(CLSID_UIHostNoLaunch, 0, CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER, IID_ITipInvocation, (void**)&tip);
-  hwnd = GetDesktopWindow();
-  SetCallback(HookCallback);
+  LoadHookDll();
 
   WNDCLASS wc = { 0 };
   wc.lpfnWndProc = WindowProc;
@@ -539,6 +560,10 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
   Shell_NotifyIcon(NIM_DELETE, &nid);
   DestroyWindow(trayHwnd);
 
+  if (hDll) {
+      FreeLibrary(hDll);
+      hDll = NULL;
+  }
   if (tip != NULL) {
       tip->Release();
       tip = NULL;
