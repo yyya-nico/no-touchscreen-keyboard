@@ -1,12 +1,14 @@
 ﻿// dllmain.cpp : DLL アプリケーションのエントリ ポイントを定義します。
 #include "pch.h"
+
+#define HOOK_EXPORTS__
 #include "Hook.h"
+
 #include <Windows.h>
 #include <stdio.h>
 
-#define DLLEXPORT extern "C" __declspec(dllexport)
 
-typedef void (*CallbackFunc)(BOOL isFocus);
+
 
 HHOOK hHook = NULL;
 HINSTANCE hInstance = NULL;
@@ -21,20 +23,10 @@ void Print(const wchar_t* format, ...) {
 	va_end(args);
 }
 
-//LRESULT CALLBACK KeyboardProc(int nCode, WPARAM wParam, LPARAM lParam) {
-//    if (nCode == HC_ACTION) {
-//        CWPSTRUCT* pCwp = (CWPSTRUCT*)lParam;
-//		if (wParam == WM_SETFOCUS && g_callback) {
-//            Print(L"WM_SETFOCUS received by window: 0x%08X\n", (int)pCwp->hwnd);
-//			g_callback(TRUE);
-//		}
-//		else if (wParam == WM_KILLFOCUS && g_callback) {
-//            Print(L"WM_KILLFOCUS received by window: 0x%08X\n", (int)pCwp->hwnd);
-//			g_callback(FALSE);
-//        }
-//    }
-//    return CallNextHookEx(hHook, nCode, wParam, lParam);
-//}
+void SetCallback(CallbackFunc callback) {
+	g_callback = callback;
+	Hook::SetHook();
+}
 
 LRESULT CALLBACK CallWndProc(int nCode, WPARAM wParam, LPARAM lParam) {
     if (nCode == HC_ACTION) {
@@ -52,17 +44,26 @@ LRESULT CALLBACK CallWndProc(int nCode, WPARAM wParam, LPARAM lParam) {
     return CallNextHookEx(hHook, nCode, wParam, lParam);
 }
 
-extern "C" __declspec(dllexport) void SetHook(CallbackFunc callback) {
-	g_callback = callback;
-    //hHook = SetWindowsHookEx(WH_KEYBOARD, KeyboardProc, hInstance, 0);
+void Hook::SetHook() {
     hHook = SetWindowsHookEx(WH_CALLWNDPROC, CallWndProc, hInstance, 0);
     if (!hHook) {
-        DWORD error = GetLastError();
-        Print(L"Failed to set hook. Error code: %lu\n", error);
+        const int size = 100;
+        wchar_t str[size];
+        DWORD dw = GetLastError();
+        if (!FormatMessage(FORMAT_MESSAGE_FROM_SYSTEM,
+            0,
+            dw,
+            0,
+            str,
+            size,
+            0)) {
+            swprintf_s(str, size, L"Failed to install hook!: %#010x", dw);
+        }
+        MessageBox(NULL, (LPCWSTR)str, L"Error", MB_ICONERROR);
     }
 }
 
-extern "C" __declspec(dllexport) void Unhook() {
+void Hook::Unhook() {
     if (hHook != NULL) {
         UnhookWindowsHookEx(hHook);
         hHook = NULL;
@@ -82,7 +83,9 @@ BOOL APIENTRY DllMain( HMODULE hModule,
         break;
     case DLL_THREAD_ATTACH:
     case DLL_THREAD_DETACH:
+        break;
     case DLL_PROCESS_DETACH:
+		Hook::Unhook();
         break;
     }
     return TRUE;

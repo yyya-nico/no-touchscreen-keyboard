@@ -15,6 +15,8 @@
 #include <initguid.h>
 #include <Objbase.h>
 
+#include "Hook.h"
+
 #pragma hdrstop
 
 // 4ce576fa-83dc-4F88-951c-9d0782b4e376
@@ -472,50 +474,7 @@ void HookCallback(BOOL isFocus) {
 	}
 }
 
-typedef void (*SetHookFunc)(void (*)(BOOL isFocus));
-typedef void (*UnhookFunc)();
-
-HINSTANCE hDll = NULL;
-SetHookFunc SetHook = NULL;
-UnhookFunc Unhook = NULL;
-
-HHOOK hHook = NULL;
 HRESULT hr;
-
-void LoadHookDll() {
-    hDll = LoadLibrary(L"Hook.dll");
-    if (hDll) {
-        SetHook = (SetHookFunc)GetProcAddress(hDll, "SetHook");
-        Unhook = (UnhookFunc)GetProcAddress(hDll, "Unhook");
-        if (SetHook && Unhook) {
-            hr = CoInitialize(0);
-            hr = CoCreateInstance(CLSID_UIHostNoLaunch, 0, CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER, IID_ITipInvocation, (void**)&tip);
-            hwnd = GetDesktopWindow();
-            SetHook(HookCallback);
-        }
-        else {
-            Print(L"Failed to get function addresses\n");
-        }
-    }
-    else {
-        Print(L"Failed to load DLL\n");
-    }
-}
-
-void UnloadHookDll() {
-    if (Unhook) {
-        Unhook();
-    }
-    if (hDll) {
-        FreeLibrary(hDll);
-        hDll = NULL;
-    }
-    if (tip != NULL) {
-        tip->Release();
-        tip = NULL;
-    }
-    CoUninitialize();
-}
 
 LRESULT CALLBACK WindowProc(HWND trayHwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
@@ -546,7 +505,10 @@ LRESULT CALLBACK WindowProc(HWND trayHwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 
 int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
-  LoadHookDll();
+  hr = CoInitialize(0);
+  hr = CoCreateInstance(CLSID_UIHostNoLaunch, 0, CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER, IID_ITipInvocation, (void**)&tip);
+  hwnd = GetDesktopWindow();
+  SetCallback(HookCallback);
 
   WNDCLASS wc = { 0 };
   wc.lpfnWndProc = WindowProc;
@@ -576,6 +538,12 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 
   Shell_NotifyIcon(NIM_DELETE, &nid);
   DestroyWindow(trayHwnd);
+
+  if (tip != NULL) {
+      tip->Release();
+      tip = NULL;
+  }
+  CoUninitialize();
 
   return 0;
 }
