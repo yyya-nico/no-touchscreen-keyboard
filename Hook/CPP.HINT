@@ -1,2 +1,0 @@
-#define DLLEXPORT extern "C" __declspec(dllexport)
-#define DLLEXPORT __declspec(dllexport)

@@ -15,6 +15,11 @@
 #include <initguid.h>
 #include <Objbase.h>
 
+#include <UIAutomation.h>
+#include <wrl/client.h>
+
+using namespace Microsoft::WRL;
+
 #pragma hdrstop
 
 // 4ce576fa-83dc-4F88-951c-9d0782b4e376
@@ -463,7 +468,7 @@ void onBlur() {
   }
 }
 
-void HookCallback(BOOL isFocus) {
+void FocusCallback(BOOL isFocus) {
 	if (isFocus) {
 		onFocus();
 	}
@@ -472,32 +477,58 @@ void HookCallback(BOOL isFocus) {
 	}
 }
 
-typedef void (*SetCallbackFunc)(void (*)(BOOL isFocus));
-typedef void (*UnhookFunc)();
+ComPtr<IUIAutomation> pAutomation;
 
-HINSTANCE hDll = NULL;
-SetCallbackFunc SetCallback = NULL;
+HRESULT InitializeUIAutomation() {
+    return CoCreateInstance(CLSID_CUIAutomation, NULL, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&pAutomation));
+}
 
-HHOOK hHook = NULL;
-HRESULT hr;
+class FocusChangedEventHandler : public IUIAutomationFocusChangedEventHandler {
+public:
+    FocusChangedEventHandler() : refCount(1) {}
 
-void LoadHookDll() {
-    hDll = LoadLibrary(L"Hook.dll");
-    if (hDll) {
-        SetCallback = (SetCallbackFunc)GetProcAddress(hDll, "SetCallback");
-        if (SetCallback) {
-            hr = CoInitialize(0);
-            hr = CoCreateInstance(CLSID_UIHostNoLaunch, 0, CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER, IID_ITipInvocation, (void**)&tip);
-            hwnd = GetDesktopWindow();
-            SetCallback(HookCallback);
-        }
-        else {
-            Print(L"Failed to get function addresses\n");
-        }
+    // IUnknown methods
+    ULONG STDMETHODCALLTYPE AddRef() {
+        return InterlockedIncrement(&refCount);
     }
-    else {
-        Print(L"Failed to load DLL\n");
+
+    ULONG STDMETHODCALLTYPE Release() {
+        ULONG count = InterlockedDecrement(&refCount);
+        if (count == 0) {
+            delete this;
+        }
+        return count;
     }
+
+    HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** ppvObject) {
+        if (riid == IID_IUnknown || riid == IID_IUIAutomationFocusChangedEventHandler) {
+            *ppvObject = static_cast<IUIAutomationFocusChangedEventHandler*>(this);
+            AddRef();
+            return S_OK;
+        }
+        *ppvObject = NULL;
+        return E_NOINTERFACE;
+    }
+
+    // IUIAutomationFocusChangedEventHandler method
+    HRESULT STDMETHODCALLTYPE HandleFocusChangedEvent(IUIAutomationElement* sender) {
+		BSTR controlType;
+		sender->get_CurrentLocalizedControlType(&controlType);
+		if (wcscmp(controlType, L"edit") == 0) {
+			FocusCallback(TRUE);
+		} else {
+			FocusCallback(FALSE);
+		}
+        return S_OK;
+    }
+
+private:
+    LONG refCount;
+};
+
+HRESULT RegisterFocusChangedEventHandler() {
+    ComPtr<IUIAutomationFocusChangedEventHandler> pHandler = new FocusChangedEventHandler();
+    return pAutomation->AddFocusChangedEventHandler(NULL, pHandler.Get());
 }
 
 LRESULT CALLBACK WindowProc(HWND trayHwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
@@ -529,7 +560,26 @@ LRESULT CALLBACK WindowProc(HWND trayHwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 
 int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
-  LoadHookDll();
+  HRESULT hr = CoInitialize(0);
+  hr = CoCreateInstance(CLSID_UIHostNoLaunch, 0, CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER, IID_ITipInvocation, (void**)&tip);
+  hwnd = GetDesktopWindow();
+
+  HRESULT hr2 = CoInitialize(NULL);
+  if (FAILED(hr2)) {
+      return 1;
+  }
+
+  hr2 = InitializeUIAutomation();
+  if (FAILED(hr2)) {
+      CoUninitialize();
+      return 1;
+  }
+
+  hr2 = RegisterFocusChangedEventHandler();
+  if (FAILED(hr2)) {
+      CoUninitialize();
+      return 1;
+  }
 
   WNDCLASS wc = { 0 };
   wc.lpfnWndProc = WindowProc;
@@ -560,14 +610,11 @@ int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
   Shell_NotifyIcon(NIM_DELETE, &nid);
   DestroyWindow(trayHwnd);
 
-  if (hDll) {
-      FreeLibrary(hDll);
-      hDll = NULL;
-  }
   if (tip != NULL) {
       tip->Release();
       tip = NULL;
   }
+  pAutomation->RemoveAllEventHandlers();
   CoUninitialize();
 
   return 0;
