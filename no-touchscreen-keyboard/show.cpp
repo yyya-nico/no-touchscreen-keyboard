@@ -510,15 +510,26 @@ public:
         return E_NOINTERFACE;
     }
 
-    // IUIAutomationFocusChangedEventHandler method
     HRESULT STDMETHODCALLTYPE HandleFocusChangedEvent(IUIAutomationElement* sender) {
-		BSTR controlType;
-		sender->get_CurrentLocalizedControlType(&controlType);
-		if (wcscmp(controlType, L"edit") == 0) {
-			FocusCallback(TRUE);
-		} else {
-			FocusCallback(FALSE);
-		}
+        BOOL isTextInput = FALSE;
+        VARIANT varProp;
+        VariantInit(&varProp);
+
+        if (SUCCEEDED(sender->GetCurrentPropertyValue(UIA_ControlTypePropertyId, &varProp))) {
+            if (varProp.vt == VT_I4
+                && (varProp.lVal == UIA_EditControlTypeId
+                    || varProp.lVal == UIA_ComboBoxControlTypeId
+                    || varProp.lVal == UIA_DocumentControlTypeId)) {
+                isTextInput = TRUE;
+            }
+        }
+        VariantClear(&varProp);
+
+        if (isTextInput) {
+            FocusCallback(TRUE);
+        } else {
+            FocusCallback(FALSE);
+        }
         return S_OK;
     }
 
