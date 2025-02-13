@@ -11,12 +11,15 @@
 #include <tlhelp32.H>
 #include <dwmapi.h>
 #include <Psapi.h>
+#include <ShellScalingApi.h>
 
 #include <initguid.h>
 #include <Objbase.h>
 
 #include <UIAutomation.h>
 #include <wrl/client.h>
+
+#include "resource.h"
 
 using namespace Microsoft::WRL;
 
@@ -485,7 +488,7 @@ HRESULT InitializeUIAutomation() {
 
 class FocusChangedEventHandler : public IUIAutomationFocusChangedEventHandler {
 public:
-    FocusChangedEventHandler() : refCount(1) {}
+    FocusChangedEventHandler() : refCount(1), isHandlingEvent(FALSE) {}
 
     // IUnknown methods
     ULONG STDMETHODCALLTYPE AddRef() {
@@ -511,6 +514,10 @@ public:
     }
 
     HRESULT STDMETHODCALLTYPE HandleFocusChangedEvent(IUIAutomationElement* sender) {
+        if (isHandlingEvent) {
+            return S_OK;
+        }
+
         BOOL isTextInput = FALSE;
         VARIANT varProp;
         VariantInit(&varProp);
@@ -533,26 +540,37 @@ public:
         return S_OK;
     }
 
+    void SetHandlingEvent(BOOL handling) {
+        isHandlingEvent = handling;
+    }
+
 private:
     LONG refCount;
+	BOOL isHandlingEvent;
 };
 
+ComPtr<FocusChangedEventHandler> pHandler;
 HRESULT RegisterFocusChangedEventHandler() {
-    ComPtr<IUIAutomationFocusChangedEventHandler> pHandler = new FocusChangedEventHandler();
+    pHandler = new FocusChangedEventHandler();
     return pAutomation->AddFocusChangedEventHandler(NULL, pHandler.Get());
 }
 
 LRESULT CALLBACK WindowProc(HWND trayHwnd, UINT uMsg, WPARAM wParam, LPARAM lParam) {
     switch (uMsg) {
-    case WM_USER + 1:
+    case WM_APP + 1:
         if (lParam == WM_RBUTTONUP || lParam == WM_LBUTTONUP) {
             POINT pt;
             GetCursorPos(&pt);
             SetForegroundWindow(trayHwnd);
             HMENU hMenu = CreatePopupMenu();
             AppendMenu(hMenu, MF_STRING, WM_CLOSE, L"Exit(&X)");
+
+			pHandler->SetHandlingEvent(TRUE);
+
             TrackPopupMenu(hMenu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, trayHwnd, NULL);
             DestroyMenu(hMenu);
+
+			pHandler->SetHandlingEvent(FALSE);
         }
         break;
     case WM_COMMAND:
@@ -571,62 +589,74 @@ LRESULT CALLBACK WindowProc(HWND trayHwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
 
 int __stdcall WinMain(HINSTANCE hInstance, HINSTANCE, LPSTR, int)
 {
-  HRESULT hr = CoInitialize(0);
-  hr = CoCreateInstance(CLSID_UIHostNoLaunch, 0, CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER, IID_ITipInvocation, (void**)&tip);
-  hwnd = GetDesktopWindow();
+    HRESULT hr = SetProcessDpiAwareness(PROCESS_PER_MONITOR_DPI_AWARE);
+    if (FAILED(hr)) {
+        MessageBox(NULL, L"Failed to set DPI awareness", L"Error", MB_OK | MB_ICONERROR);
+        return 1;
+    }
 
-  HRESULT hr2 = CoInitialize(NULL);
-  if (FAILED(hr2)) {
-      return 1;
-  }
+    hr = CoInitialize(0);
+    if (FAILED(hr)) {
+        return 1;
+    }
 
-  hr2 = InitializeUIAutomation();
-  if (FAILED(hr2)) {
-      CoUninitialize();
-      return 1;
-  }
+    hr = CoCreateInstance(CLSID_UIHostNoLaunch, 0, CLSCTX_INPROC_HANDLER | CLSCTX_LOCAL_SERVER, IID_ITipInvocation, (void**)&tip);
+    if (FAILED(hr)) {
+        CoUninitialize();
+        return 1;
+    }
 
-  hr2 = RegisterFocusChangedEventHandler();
-  if (FAILED(hr2)) {
-      CoUninitialize();
-      return 1;
-  }
+    hwnd = GetDesktopWindow();
 
-  WNDCLASS wc = { 0 };
-  wc.lpfnWndProc = WindowProc;
-  wc.hInstance = hInstance;
-  wc.lpszClassName = L"TrayWindowClass";
-  RegisterClass(&wc);
+    hr = InitializeUIAutomation();
+    if (FAILED(hr)) {
+        tip->Release();
+        CoUninitialize();
+        return 1;
+    }
 
-  HWND trayHwnd = CreateWindowEx(0, L"TrayWindowClass", L"Tray", 0, 0, 0, 0, 0, NULL, NULL, hInstance, NULL);
+    hr = RegisterFocusChangedEventHandler();
+    if (FAILED(hr)) {
+        tip->Release();
+        CoUninitialize();
+        return 1;
+    }
 
-  NOTIFYICONDATA nid;
-  ZeroMemory(&nid, sizeof(nid));
-  nid.cbSize = sizeof(NOTIFYICONDATA);
-  nid.hWnd = trayHwnd;
-  nid.uID = 1;
-  nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
-  nid.uCallbackMessage = WM_USER + 1;
-  nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
-  wcscpy_s(nid.szTip, L"No Touchscreen Keyboard");
+    WNDCLASS wc = { 0 };
+    wc.lpfnWndProc = WindowProc;
+    wc.hInstance = hInstance;
+    wc.lpszClassName = L"TrayWindowClass";
+    RegisterClass(&wc);
 
-  Shell_NotifyIcon(NIM_ADD, &nid);
+    HWND trayHwnd = CreateWindowEx(0, L"TrayWindowClass", L"Tray", 0, 0, 0, 0, 0, NULL, NULL, hInstance, NULL);
 
-  MSG msg;
-  while (GetMessage(&msg, NULL, 0, 0)) {
-      TranslateMessage(&msg);
-      DispatchMessage(&msg);
-  }
+    NOTIFYICONDATA nid;
+    ZeroMemory(&nid, sizeof(nid));
+    nid.cbSize = sizeof(NOTIFYICONDATA);
+    nid.hWnd = trayHwnd;
+    nid.uID = 1;
+    nid.uFlags = NIF_ICON | NIF_MESSAGE | NIF_TIP;
+    nid.uCallbackMessage = WM_APP + 1;
+    nid.hIcon = LoadIcon(NULL, IDI_APPLICATION);
+    wcscpy_s(nid.szTip, L"No Touchscreen Keyboard");
 
-  Shell_NotifyIcon(NIM_DELETE, &nid);
-  DestroyWindow(trayHwnd);
+    Shell_NotifyIcon(NIM_ADD, &nid);
 
-  if (tip != NULL) {
-      tip->Release();
-      tip = NULL;
-  }
-  pAutomation->RemoveAllEventHandlers();
-  CoUninitialize();
+    MSG msg;
+    while (GetMessage(&msg, NULL, 0, 0)) {
+        TranslateMessage(&msg);
+        DispatchMessage(&msg);
+    }
 
-  return 0;
+    Shell_NotifyIcon(NIM_DELETE, &nid);
+    DestroyWindow(trayHwnd);
+
+    if (tip != NULL) {
+        tip->Release();
+        tip = NULL;
+    }
+    pAutomation->RemoveAllEventHandlers();
+    CoUninitialize();
+
+    return 0;
 }
